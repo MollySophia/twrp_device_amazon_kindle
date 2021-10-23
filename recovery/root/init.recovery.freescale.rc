@@ -1,0 +1,4 @@
+on init
+	# Insmod EPDC driver (reagl first)
+    insmod /lib/modules/mxc_epdc_eink.ko
+    insmod /lib/modules/mxc_epdc_fb.ko builtin_firmware=y

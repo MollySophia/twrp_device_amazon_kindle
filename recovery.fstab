@@ -1,0 +1,9 @@
+# mount point       fstype    device                                                                flags
+/boot         emmc     /dev/block/platform/soc0/soc.2/by-name/boot         flags=display="Boot";backup=1;flashimg=1
+/cache        ext4     /dev/block/platform/soc0/soc.2/by-name/cache        flags=display="Cache"
+/data         ext4     /dev/block/platform/soc0/soc.2/by-name/userdata     flags=display="Data"
+/misc         emmc     /dev/block/platform/soc0/soc.2/by-name/misc         flags=display="Misc";backup=1;flashimg=1
+/recovery     emmc     /dev/block/platform/soc0/soc.2/by-name/recovery     flags=display="Recovery";backup=1;flashimg=1
+/system       ext4     /dev/block/platform/soc0/soc.2/by-name/system       flags=display="System";backup=1
+/spl          emmc     /dev/block/mmcblk0boot0                             flags=display="Spl"
+/mboot        emmc     /dev/block/mmcblk0boot1                             flags=display="Mboot"
