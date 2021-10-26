@@ -1,0 +1,221 @@
+diff --git a/minui21/graphics.c b/minui21/graphics.c
+index 580af29..3c12aec 100644
+--- a/minui21/graphics.c
++++ b/minui21/graphics.c
+@@ -48,6 +48,9 @@
+ #elif defined(RECOVERY_RGBX)
+ #define PIXEL_FORMAT GGL_PIXEL_FORMAT_RGBX_8888
+ #define PIXEL_SIZE   4
++#elif defined(IMX_EINK)
++#define PIXEL_FORMAT GGL_PIXEL_FORMAT_L_8
++#define PIXEL_SIZE   1
+ #else
+ #define PIXEL_FORMAT GGL_PIXEL_FORMAT_RGB_565
+ #define PIXEL_SIZE   2
+diff --git a/minuitwrp/Android.mk b/minuitwrp/Android.mk
+index c844082..4e1f6ec 100644
+--- a/minuitwrp/Android.mk
++++ b/minuitwrp/Android.mk
+@@ -199,6 +199,20 @@ ifeq ($(TW_DISABLE_TTF), true)
+     $(error stopping)
+ endif
+ 
++ifeq ($(TW_IMX_EINK), true)
++  LOCAL_CFLAGS += -DIMX_EINK
++endif
++
++ifeq ($(TW_IMX_EINK_MONOCHROME), true)
++  LOCAL_CFLAGS += -DIMX_EINK_A2
++endif
++
++ifneq ($(TW_IMX_EINK_ROTATE),)
++  LOCAL_CFLAGS += -DIMX_EINK_ROTATE=$(TW_IMX_EINK_ROTATE)
++else
++  LOCAL_CFLAGS += -DIMX_EINK_ROTATE=0
++endif
++
+ LOCAL_CLANG := true
+ 
+ LOCAL_CFLAGS += -DTWRES=\"$(TWRES_PATH)\"
+diff --git a/minuitwrp/graphics_fbdev.cpp b/minuitwrp/graphics_fbdev.cpp
+old mode 100644
+new mode 100755
+index fc5fcf3..d35a109
+--- a/minuitwrp/graphics_fbdev.cpp
++++ b/minuitwrp/graphics_fbdev.cpp
+@@ -34,6 +34,10 @@
+ #include "graphics.h"
+ #include <pixelflinger/pixelflinger.h>
+ 
++#ifdef IMX_EINK
++#include "mxcfb.h"
++#endif
++
+ static GRSurface* fbdev_init(minui_backend*);
+ static GRSurface* fbdev_flip(minui_backend*);
+ static void fbdev_blank(minui_backend*, bool);
+@@ -59,6 +63,43 @@ minui_backend* open_fbdev() {
+     return &my_backend;
+ }
+ 
++#ifdef IMX_EINK
++static unsigned int marker_val = 1;
++static int epdc_fd;
++static unsigned char *alt_ptr = NULL;
++static uint32_t alt_addr = 0;
++
++static unsigned int epdc_update(const struct mxcfb_rect region, int waveform_mode, uint32_t update_mode, int dithering_mode, bool is_nightmode, uint32_t marker)
++{
++	struct mxcfb_update_data upd_data = {
++		.update_region   = region,
++		.waveform_mode   = waveform_mode,
++		.update_mode     = update_mode,
++		.update_marker   = marker,
++		.temp            = TEMP_USE_AMBIENT,
++		.flags           = (waveform_mode == WAVEFORM_MODE_GLD16) ? EPDC_FLAG_USE_ZELDA_REGAL
++				   : (waveform_mode == WAVEFORM_MODE_A2)  ? EPDC_FLAG_FORCE_MONOCHROME
++										: 0U,
++		.dither_mode     = dithering_mode,
++		.quant_bit       = (dithering_mode == EPDC_FLAG_USE_DITHERING_PASSTHROUGH)                            ? 0
++				   : (waveform_mode == WAVEFORM_MODE_A2 || waveform_mode == WAVEFORM_MODE_DU)   ? 1
++				   : (waveform_mode == WAVEFORM_MODE_GL4 || waveform_mode == WAVEFORM_MODE_DU4) ? 3
++														      : 7,
++		.alt_buffer_data = { 0U },
++		.hist_bw_waveform_mode =
++		    (waveform_mode == WAVEFORM_MODE_REAGL) ? WAVEFORM_MODE_REAGL : WAVEFORM_MODE_DU,
++		.hist_gray_waveform_mode =
++		    (waveform_mode == WAVEFORM_MODE_REAGL) ? WAVEFORM_MODE_REAGL : WAVEFORM_MODE_GC16,
++	};
++
++	int retval;
++
++	retval = ioctl(epdc_fd, MXCFB_SEND_UPDATE, &upd_data);
++
++	return upd_data.waveform_mode;
++}
++#endif
++
+ static void fbdev_blank(minui_backend* backend __unused, bool blank)
+ {
+ #if defined(TW_NO_SCREEN_BLANK) && defined(TW_BRIGHTNESS_PATH) && defined(TW_MAX_BRIGHTNESS)
+@@ -114,6 +155,13 @@ static void set_displayed_framebuffer(unsigned n)
+ }
+ 
+ static GRSurface* fbdev_init(minui_backend* backend) {
++
++#ifdef IMX_EINK
++    int auto_update_mode;
++    struct mxcfb_waveform_modes wv_modes;
++    int scheme = UPDATE_SCHEME_QUEUE_AND_MERGE;
++#endif
++
+     int retry = 20;
+     int fd = -1;
+     while (fd == -1) {
+@@ -167,6 +215,21 @@ static GRSurface* fbdev_init(minui_backend* backend) {
+         return NULL;
+     }
+ 
++#ifdef IMX_EINK
++    vi.bits_per_pixel = 8;
++    vi.grayscale = 1;
++    vi.yoffset = 0;
++    vi.rotate = IMX_EINK_ROTATE; //FB_ROTATE_UR = 0 is default
++    vi.activate = FB_ACTIVATE_FORCE;
++    epdc_fd = fd;
++
++    if (ioctl(fd, FBIOPUT_VSCREENINFO, &vi) < 0) {
++        perror("failed to put fb0 info");
++        close(fd);
++        return NULL;
++    }
++#endif
++
+     // We print this out for informational purposes only, but
+     // throughout we assume that the framebuffer device uses an RGBX
+     // pixel format.  This is the case for every development device I
+@@ -212,13 +275,19 @@ static GRSurface* fbdev_init(minui_backend* backend) {
+     } else if (vi.red.offset == 8 || vi.red.offset == 16) {
+         printf("setting GGL_PIXEL_FORMAT_BGRA_8888\n");
+         gr_framebuffer[0].format = GGL_PIXEL_FORMAT_BGRA_8888;
+-    } else if (vi.red.offset == 0) {
++    } else if (vi.red.offset == 0 && vi.bits_per_pixel != 8) {
+         printf("setting GGL_PIXEL_FORMAT_RGBA_8888\n");
+         gr_framebuffer[0].format = GGL_PIXEL_FORMAT_RGBA_8888;
+     } else if (vi.red.offset == 24) {
+         printf("setting GGL_PIXEL_FORMAT_RGBX_8888\n");
+         gr_framebuffer[0].format = GGL_PIXEL_FORMAT_RGBX_8888;
+     } else {
++    #ifdef IMX_EINK
++        if(vi.bits_per_pixel == 8) {
++            printf("setting GGL_PIXEL_FORMAT_L_8\n");
++            gr_framebuffer[0].format = GGL_PIXEL_FORMAT_L_8;
++        } else
++    #endif
+         if (vi.red.length == 8) {
+             printf("No valid pixel format detected, trying GGL_PIXEL_FORMAT_RGBX_8888\n");
+             gr_framebuffer[0].format = GGL_PIXEL_FORMAT_RGBX_8888;
+@@ -269,6 +338,41 @@ static GRSurface* fbdev_init(minui_backend* backend) {
+ #if defined(RECOVERY_BGRA)
+     printf("RECOVERY_BGRA\n");
+ #endif
++
++#ifdef IMX_EINK
++    auto_update_mode = AUTO_UPDATE_MODE_REGION_MODE;
++    if (ioctl(fd, MXCFB_SET_AUTO_UPDATE_MODE, &auto_update_mode) < 0) {
++        perror("set auto update mode failed\n");
++        return NULL;
++    }
++
++	wv_modes.mode_init      = 0;
++	wv_modes.mode_du        = 1;
++	wv_modes.mode_gc4       = 2;
++	wv_modes.mode_gc8       = 2;
++	wv_modes.mode_gc16      = 2;
++	wv_modes.mode_gc16_fast = 2;
++	wv_modes.mode_gc32      = 2;
++	wv_modes.mode_gl16      = 3;
++	wv_modes.mode_gl16_fast = 3;
++	wv_modes.mode_a2        = 6;
++	wv_modes.mode_du4       = 7;
++	wv_modes.mode_reagl     = 4;
++	wv_modes.mode_reagld    = 5;
++	wv_modes.mode_gl4       = 0;
++	wv_modes.mode_gl16_inv  = 0;
++
++    if (ioctl(fd, MXCFB_SET_WAVEFORM_MODES, &wv_modes) < 0) {
++        perror("set waveform modes failed\n");
++        return NULL;
++    }
++
++    if (ioctl(fd, MXCFB_SET_UPDATE_SCHEME, &scheme) < 0) {
++        perror("set update scheme failed\n");
++        return NULL;
++    }
++#endif
++
+     fb_fd = fd;
+     set_displayed_framebuffer(0);
+ 
+@@ -303,6 +407,21 @@ static GRSurface* fbdev_flip(minui_backend* backend __unused) {
+         memcpy(gr_framebuffer[0].data, gr_draw->data,
+                gr_draw->height * gr_draw->row_bytes);
+     }
++
++#ifdef IMX_EINK
++	int wfm_mode = WAVEFORM_MODE_AUTO;
++	struct mxcfb_rect region = {
++		.top = 0,
++		.left = 0,
++		.width = vi.xres,
++		.height = vi.yres,
++	};
++#ifdef IMX_EINK_A2
++	wfm_mode = WAVEFORM_MODE_A2;
++#endif
++	epdc_update(region, wfm_mode, UPDATE_MODE_PARTIAL, EPDC_FLAG_USE_DITHERING_PASSTHROUGH, false, marker_val);
++#endif
++
+     return gr_draw;
+ }
+ 
