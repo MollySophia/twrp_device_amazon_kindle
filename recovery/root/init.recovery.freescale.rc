@@ -1,4 +1,5 @@
 on init
+	insmod /lib/modules/zforce2.ko
 	# Insmod EPDC driver (reagl first)
     insmod /lib/modules/mxc_epdc_eink.ko
     insmod /lib/modules/mxc_epdc_fb.ko builtin_firmware=y
